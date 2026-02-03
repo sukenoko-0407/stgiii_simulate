@@ -32,7 +32,9 @@ class BayesianFreeWilsonOperator(BaseOperator):
         super().__init__(context)
 
         # 設定パラメータ
-        self.alpha = self.config.ridge_alpha  # prior precision = 1/alpha
+        self.alpha_min = self.config.alpha_min
+        self.alpha_max = self.config.alpha_max
+        self.alpha = self._clip_alpha(self.config.ridge_alpha)  # prior precision = 1/alpha
         self.beta = self.config.ucb_beta
         self.sigma_min = self.config.sigma_min
         self.sigma_iter_max = self.config.sigma_iter_max
@@ -50,6 +52,38 @@ class BayesianFreeWilsonOperator(BaseOperator):
         self.Sigma_theta = None
         self.sigma = self.config.sigma_gen
         self._all_X = None
+        self.alpha = self._clip_alpha(self.config.ridge_alpha)
+
+    def _clip_alpha(self, alpha: float) -> float:
+        """alphaを安全範囲にクリップ"""
+        return float(np.clip(alpha, self.alpha_min, self.alpha_max))
+
+    def _update_alpha(
+        self,
+        theta_map: NDArray[np.float64],
+        Sigma_theta: NDArray[np.float64]
+    ) -> float:
+        """
+        Evidence Maximization (ML-II) によるalpha更新
+
+        更新式:
+            γ = n_features - α * trace(Σ)
+            α_new = γ / (θ^T θ)
+        """
+        theta_norm_sq = float(theta_map.T @ theta_map)
+        if not np.isfinite(theta_norm_sq) or theta_norm_sq <= 1e-12:
+            return self.alpha
+
+        trace_sigma = float(np.trace(Sigma_theta))
+        gamma = Sigma_theta.shape[0] - self.alpha * trace_sigma
+        if not np.isfinite(gamma) or gamma <= 0:
+            return self.alpha
+
+        alpha_new = gamma / theta_norm_sq
+        if not np.isfinite(alpha_new):
+            return self.alpha
+
+        return self._clip_alpha(alpha_new)
 
     def _precompute_all_features(self) -> NDArray[np.float64]:
         """全セルの特徴量行列を事前計算"""
@@ -131,6 +165,20 @@ class BayesianFreeWilsonOperator(BaseOperator):
             self.Sigma_theta = cho_solve((c, lower), np.eye(n_features))
         except np.linalg.LinAlgError:
             self.Sigma_theta = np.linalg.inv(H)
+
+        # Empirical Bayes: alpha更新（fit毎に1回）
+        new_alpha = self._update_alpha(self.theta_map, self.Sigma_theta)
+        if abs(new_alpha - self.alpha) > 1e-12:
+            self.alpha = new_alpha
+            Lambda_inv = self.alpha * np.eye(n_features)
+            H = XtX / (self.sigma ** 2) + Lambda_inv
+            try:
+                c, lower = cho_factor(H)
+                self.theta_map = cho_solve((c, lower), Xty / (self.sigma ** 2))
+                self.Sigma_theta = cho_solve((c, lower), np.eye(n_features))
+            except np.linalg.LinAlgError:
+                self.theta_map = np.linalg.solve(H, Xty / (self.sigma ** 2))
+                self.Sigma_theta = np.linalg.inv(H)
 
     def select_next_cells(
         self,
@@ -234,6 +282,23 @@ class BayesianFreeWilsonOperator(BaseOperator):
 
         return mu_pred, sigma_param, sigma_total
 
+    def _sample_theta(self) -> NDArray[np.float64]:
+        """係数事後からサンプリング"""
+        if self.theta_map is None or self.Sigma_theta is None:
+            raise ValueError("モデルが未学習です")
+
+        n_features = self.theta_map.shape[0]
+        try:
+            L = np.linalg.cholesky(self.Sigma_theta)
+            z = self.rng.standard_normal(n_features)
+            return self.theta_map + L @ z
+        except np.linalg.LinAlgError:
+            # 数値誤差で非正定値になる場合のフォールバック
+            eigvals, eigvecs = np.linalg.eigh(self.Sigma_theta)
+            eigvals = np.clip(eigvals, 0.0, None)
+            z = self.rng.standard_normal(n_features)
+            return self.theta_map + eigvecs @ (np.sqrt(eigvals) * z)
+
     def get_coefficients_reference(self) -> NDArray[np.float64]:
         """Reference coding係数を取得"""
         if self.theta_map is None:
@@ -285,3 +350,44 @@ class BayesianFreeWilsonOperator(BaseOperator):
         if self.Sigma_theta is None:
             raise ValueError("モデルが未学習です")
         return self.Sigma_theta.copy()
+
+
+@register_operator(OperatorType.BAYESIAN_FW_TS)
+class BayesianFreeWilsonTSOperator(BayesianFreeWilsonOperator):
+    """
+    ベイジアンFree-Wilson（MAP + Laplace + Thompson Sampling）戦略
+    """
+
+    name = "Bayesian-FW-TS"
+
+    def select_next_cells(
+        self,
+        disclosure_state: DisclosureState,
+        k: int
+    ) -> List[int]:
+        """
+        Thompson Samplingで次候補を選択
+
+        Args:
+            disclosure_state: 現在の開示状態
+            k: 選択するセル数
+
+        Returns:
+            選択したセルのインデックスリスト
+        """
+        undisclosed = disclosure_state.get_undisclosed_indices()
+        actual_k = min(k, len(undisclosed))
+        if actual_k == 0:
+            return []
+
+        if self.theta_map is None or self.Sigma_theta is None:
+            # モデル未学習時はランダム選択
+            selected = self.rng.choice(undisclosed, size=actual_k, replace=False)
+            return selected.tolist()
+
+        all_X = self._precompute_all_features()
+        theta_sample = self._sample_theta()
+        scores = all_X @ theta_sample
+
+        undisclosed_scores = scores[undisclosed]
+        return self._random_tiebreak(undisclosed, undisclosed_scores, actual_k)

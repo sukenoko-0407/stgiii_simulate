@@ -12,7 +12,10 @@ from stgiii_core.operators.base import OperatorContext
 from stgiii_core.operators.registry import get_operator, list_operators
 from stgiii_core.operators.random_operator import RandomOperator
 from stgiii_core.operators.fw_ridge import FreeWilsonRidgeOperator
-from stgiii_core.operators.bayesian_fw import BayesianFreeWilsonOperator
+from stgiii_core.operators.bayesian_fw import (
+    BayesianFreeWilsonOperator,
+    BayesianFreeWilsonTSOperator,
+)
 
 
 @pytest.fixture
@@ -25,10 +28,8 @@ def simple_config() -> SimulationConfig:
             SlotConfig("A", 10),
             SlotConfig("B", 10),
         ),
-        main_effect_range=(-1.0, 1.0),
-        error_clip_range=(-0.5, 0.5),
         k_per_step=1,
-        topk_k=5,
+        topk_k=100,
         random_seed=42,
     )
 
@@ -50,6 +51,7 @@ class TestOperatorRegistry:
         assert OperatorType.RANDOM in operators
         assert OperatorType.FW_RIDGE in operators
         assert OperatorType.BAYESIAN_FW_UCB in operators
+        assert OperatorType.BAYESIAN_FW_TS in operators
 
     def test_get_random_operator(self, context: OperatorContext) -> None:
         """RandomOperatorの取得"""
@@ -68,6 +70,12 @@ class TestOperatorRegistry:
         operator = get_operator(OperatorType.BAYESIAN_FW_UCB, context)
         assert isinstance(operator, BayesianFreeWilsonOperator)
         assert operator.name == "Bayesian-FW-UCB"
+
+    def test_get_bayesian_ts_operator(self, context: OperatorContext) -> None:
+        """BayesianFW-TS Operatorの取得"""
+        operator = get_operator(OperatorType.BAYESIAN_FW_TS, context)
+        assert isinstance(operator, BayesianFreeWilsonTSOperator)
+        assert operator.name == "Bayesian-FW-TS"
 
 
 class TestRandomOperator:

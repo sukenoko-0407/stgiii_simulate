@@ -2,6 +2,33 @@
 
 StageIII Simulator 生成モデル変更案（v1.0）
 
+---
+
+## 0. 決定事項（v1.0実装方針・ユーザ回答反映）
+
+本ドキュメントは、以下の意思決定を前提として記述する。
+
+- **生成モデルはv1.0へ全面置換**（旧additiveモデル/旧パラメータへの互換性は重視しない）
+- スロット距離 `D`：デフォルトは **直鎖距離（A-B-C-D）**、Advancedで任意行列入力を許可
+- 相互作用スケール：`scale_{s,t} = exp(-D_{s,t}/λ)`、`λ` をUIに出す
+- BB埋め込み：シリーズ混合（クラスタ中心＋微小ノイズ）、初期値は `d=16, K_s=ceil(N_s/5), σ_z=0.3`
+- 主作用 `m_s[i]`：**一様分布で生成**（従来方針）  
+  ただしユーザは `main_effect_range` のような絶対スケールを直接指定せず、**寄与比率（`f_main/f_int/f_res`）**で難易度を制御する
+- 相互作用（smooth）：低ランク双線形 `z^T W z`、初期値 `r=4`
+- 相互作用（spike）：ホットスポット和＋中心は実在BBペアからサンプル
+- cliff UI：**H（ホットスポット数）をUIで**。鋭さ `ℓ` はUIで必須にしない（固定orAdvanced）。  
+  `η_spike`（smoothとspikeの混合）は概念説明を併記し、UIラベルも分かりやすくする
+- 残差：`t` 分布（`ν_res` をUIで指定）  
+  なぜ `t` を使うかの理由を本文に明記する（後述）
+- 出力レンジ：観測Range（`obs_low/obs_high`）は現状維持。  
+  UIでパラメータを動かしてもレンジ外へ大きく逸脱しにくいよう、**最終段でμ/σを正規化**し、必要なら **clip率を監視**する
+- 正解定義：`top1_index = argmax(y_latent)`（latent基準）
+- Matrix保存：`y_main/y_int/y_res` と **寄与比率**を保存（デバッグ・可視化用途）
+- UIプリセット：3プリセットを用意（現実寄りに難易度を切替）
+- 検証手段：現行同様に **サンプルCSVをダウンロード**できるように実装する（新生成モデルの動作確認用）
+
+---
+
 目的：
 - **現実の組み合わせ合成（combinatorial synthesis）段階**で観測される振る舞いに近い生成モデルを、シミュレータ側に実装できるレベルまで具体化する
 - 特に以下を同時に再現する  
@@ -60,10 +87,19 @@ StageIII Simulator 生成モデル変更案（v1.0）
 
 よって、相互作用は **滑らかな成分 + 特異点（spike）成分** の和で作る：
 
-`I_{s,t} = scale_{s,t} * ( I_smooth_{s,t} + I_spike_{s,t} )`  
+`I_{s,t} = scale_{s,t} * ( sqrt(1-η_spike) * Î_smooth_{s,t} + sqrt(η_spike) * Î_spike_{s,t} )`  
 （最後にdouble-centeringして主作用と分離）
 
-ここで `scale_{s,t}` は「スロットが近いほど相互作用が起こりやすい／大きい」を表すスケール因子（ただし**“近い構造ほど値が滑らか”を強制しない**）。
+ここで：
+- `η_spike ∈ [0,1]`：**cliff（特異点）の寄与比率ノブ**（0で完全に滑らか、1で特異点が支配）
+  - UI上の意味（直感的な説明）：
+    - `η_spike = 0`：相互作用は滑らかな成分のみ（activity cliffがほぼ出ない）
+    - `η_spike = 0.5`：相互作用の“エネルギー（分散）”のうち半分程度がcliff由来（局所的な跳ねが増える）
+    - `η_spike = 1`：相互作用はcliff成分が支配（近いのに急に変わる、が頻発しやすい）
+  - 実装上の定義：
+    - `Î_smooth` と `Î_spike` は、それぞれ **double-centering前に0平均化し、標準偏差を1に正規化**した相互作用テーブル  
+      （これにより `η_spike` を“混合比”ではなく“寄与比率”として解釈しやすくする）
+- `scale_{s,t}`：スロット距離に基づく相互作用スケール（ただし**“近い構造ほど値が滑らか”を強制しない**）
 
 ---
 
@@ -187,11 +223,14 @@ BBペア(i,j)への寄与：
 ここは現実のプロジェクトによって様々だが、少なくとも「スロットごとにBBの傾向がある」は自然。
 
 推奨例：
-- まず `raw_m_s[i] ~ N(0, 1)` を生成
+- まず `raw_m_s[i] ~ Uniform(-1, 1)` を生成（従来方針：一様分布）
 - スロットごとにスケールを持たせてもよい（slot biasや“このスロットは効きやすい”）
 - あるいは既存設定に合わせ、`Uniform(main_low, main_high)` を生成してもよい
 
-重要なのは後段の **スケーリング（寄与比率の制御）** で、ここで「主作用は限定的」「残差が大きい」を実現する。
+重要：
+- 本v1.0では、ユーザは `main_effect_range` のような“絶対スケール”をUIで直接指定しない。  
+  代わりに後段の **寄与比率（`f_main/f_int/f_res`）** によって、「主作用がどの程度支配的か」を制御する。
+- よって、ここでの `raw_m_s` は“形”を作るための乱数であり、最終スケールは 11章の正規化で決まる。
 
 ---
 
@@ -202,6 +241,12 @@ BBペア(i,j)への寄与：
 
 - `ε_res(x) ~ t_ν(0, σ_res)`（例：`ν=3〜10`）
 - 必要なら極端値を抑えるために clip してもよい（ただし分布の裾が変わる）
+
+補足：なぜ `t` 分布（heavy-tail）を採用するのか
+- 組み合わせ合成では、説明しきれない要因（微小な合成差、測定系の揺らぎ、未知の高次相互作用、実験バッチ差など）が残り、**“たまに大きく外れる”**現象が起きる。
+- 正規分布（Gaussian）は外れ値を過小に見積もりやすく、Simulatorが「素直すぎる世界」になりやすい。
+- `t` 分布は「普段は小さいが、たまに大きい」を自然に表現でき、**activity cliffとは別枠の“説明不能外れ”**を入れやすい。  
+  （cliffは系統成分として `I_spike` に入れ、残差は“どうしても説明できないもの”として `ε_res` に残す、という役割分担を明確にできる）
 
 ここは「相互作用を間引く」より現実に近いことが多い：
 - 相互作用は系統成分（学習可能な部分）として残す
@@ -253,6 +298,17 @@ BBペア(i,j)への寄与：
 - `w_int  = 0.8`（相互作用がそこそこ）
 - `w_res  = 1.5`（残差が支配的）
 
+補足（UIからの制御を意識した表現）：
+- `w_main, w_int, w_res` は「成分の寄与比率（=難易度）」を最も直感的に動かせるノブである。
+- UIでは重みそのものではなく、以下のような**分散比率（fraction）**で指定してもよい：
+  - `f_main + f_int + f_res = 1`（各成分の“狙い分散比率”）
+  - 本モデルは `ŷ_main, ŷ_int, ŷ_res` を全セル上で標準化してから合成するため、まずは近似的に
+    - `w_main = sqrt(f_main)`
+    - `w_int  = sqrt(f_int)`
+    - `w_res  = sqrt(f_res)`
+    と置けば、概ね意図した比率で合成される（成分間の共分散が小さい設計のため）。
+  - 実装では生成後に実測の分散比率を再計算し、UIに表示して確認できるようにする（ズレが大きい場合は警告 or 自動微調整）。
+
 ### 11.3 pIC50スケールへの写像（obs_rangeと整合）
 
 最終的に、目標平均 `μ_target` と目標標準偏差 `σ_target` に合わせる：
@@ -273,8 +329,8 @@ BBペア(i,j)への寄与：
 Input:
   slot_sizes N_s, obs range, slot distance matrix D
   embedding dim d, interaction rank r
-  spike params (H_{s,t}, nu, sigma_spike, ell)
-  residual params (nu_res, sigma_res)  # or w_res via scaling
+  spike params (η_spike, H_{s,t}, nu_spike, sigma_spike, ell)
+  residual params (nu_res)  # strength is controlled by f_res / w_res (variance fraction)
   weights (w_main, w_int, w_res)
   target mean/stdev (mu_target, sigma_target)
 
@@ -287,15 +343,17 @@ Input:
      generate W_{s,t} (low-rank)
      build I_smooth[i,j] = z_s[i]^T W z_t[j]
      build I_spike via H hotspots on embedding space
-     I = scale * (I_smooth + I_spike)
+     center+standardize I_smooth -> Î_smooth (0 mean, unit std)
+     center+standardize I_spike  -> Î_spike  (0 mean, unit std)
+     I = scale * ( sqrt(1-η_spike)*Î_smooth + sqrt(η_spike)*Î_spike )
      I = double_center(I)
 4) For every cell x=(i_1..i_S):
      y_main(x) = sum_s m_s[i_s]
      y_int(x)  = sum_{s<t} I_{s,t}[i_s,i_t]
      y_res(x)  = sample t_nu_res(0,1)  # then scaling step
 5) Standardize y_main, y_int, y_res over all cells; combine with weights:
-     y_raw = w_main*std(y_main) + w_int*std(y_int) + w_res*std(y_res)
-6) Affine transform y_raw to match (mu_target, sigma_target):
+     y_latent_raw = w_main*ŷ_main + w_int*ŷ_int + w_res*ŷ_res
+6) Affine transform y_latent_raw to match (mu_target, sigma_target):
      y_latent = ...
 7) y_obs = clip(y_latent, obs_range)
 8) top1_index = argmax(y_latent)  # uniqueness check as needed
@@ -326,6 +384,105 @@ Input:
 - `bb_embeddings`: slotごとの `z_s[i]`
 - `interaction_tables`: 各(s,t)の `I_{s,t}`（double-centering後）
 - `components`（任意）：`y_main`, `y_int`, `y_res`（デバッグ・分析用）
+- `variance_fractions`（推奨）：`VarFrac(main/int/res)` と、可能なら `VarFrac(int_smooth/int_spike)`
 
 Matrix構造体に「主作用」「相互作用」の分解を保存するかは任意だが、検証のためには保存推奨。
 
+---
+
+## 15. 難易度（Difficulty）の制御方針（UIから調整できる形）
+
+ここでいう「難易度」は、少なくとも以下の2つを含む：
+- **(D1) どれだけ“学習可能な構造”があるか**（主作用・相互作用が残差に埋もれていないか）
+- **(D2) 構造があっても“素直に一般化できるか”**（cliffの頻度・鋭さ、heavy-tailの外れやすさ、clipで情報が潰れる度合い）
+
+本v1.0生成モデルでは、難易度は主に次のノブで制御する。
+
+### 15.1 UIで最低限出したいノブ（推奨）
+
+**A. 寄与比率（最重要）**
+- `f_main, f_int, f_res`（分散比率、合計=1）  
+  - `f_main` が大きいほど「主作用で説明できる割合」が増え、一般に難易度は下がる
+  - `f_res` が大きいほど「説明不能な残差」が増え、一般に難易度は上がる
+  - `f_int` は「主作用だけでは足りない度合い」（モデルミスマッチの強さ）を作る
+- 実装は `w = sqrt(f)` を初期値として利用し、合成後の実測比率も表示する（11.2参照）
+
+**B. cliff強度（特異点の出方）**
+- `H`：ホットスポット数（UIで理解しやすい概念、1〜5程度が現実的）  
+- `η_spike`（0〜1）：相互作用のうち **cliff由来が占める“寄与比率”**  
+  - UIラベル例：`Cliff Contribution (0=smooth, 1=cliff-dominant)`
+  - `η_spike` は“混合比”ではなく、3章の定義通り **I_smooth/I_spikeを正規化した上で分散寄与を割り当てるノブ**である
+- `ℓ`：ホットスポットの幅（小さいほど局所的・cliffが鋭い）
+  - 本方針では **UI必須にしない**（固定デフォルト or Advanced）
+- `σ_spike, ν_spike`：スパイク振幅のスケールとheavy-tail（νが小さいほど極端値）
+
+**C. 残差の“外れやすさ”**
+- `ν_res`（t分布の自由度）：小さいほど外れやすい（外れ値が現実にあるなら重要）
+  - `w_res`（または `f_res`）は残差の“量”、`ν_res` は残差の“質（外れ方）”を担当
+
+（これら3つが揃えば、UIから「主作用支配で易しい」「cliffが多くて難しい」「残差が重くて難しい」を直感的に作れる）
+
+### 15.2 “自動で破綻しない”ための補助ノブ（必要ならUIに追加）
+
+**D. クリップ率（情報損失）**
+観測Range（`obs_low/obs_high`）は固定のまま、**パラメータを動かしてもレンジ外へ大きく逸脱しにくい**ことを優先する。
+
+推奨実装：
+- 生成後に `y_latent_raw` を `μ_target, σ_target` へ正規化し、最後に `clip` する（11.3）
+- `σ_target` はデフォルトで `(obs_high-obs_low)/6` とする（±3σが概ねレンジ内）
+- ただし heavy-tail（spike/residual）が強いと clip が増えるため、**生成後にclip率を計測し、過剰ならσ_targetを下げる**  
+  - 例：`clip_rate_max = 1%` を上限に、`σ_target` を二分探索で調整
+  - UIが何をどう動かしても「レンジ外が大量に出る」状態を避けられる
+- UIには「Clip Rate（上下限に張り付く割合）」を表示して、情報損失を可視化する
+
+**E. 相互作用の“滑らかさ”側の複雑度**
+- `d`（埋め込み次元）、`r`（低ランク相互作用のランク）、`σ_z`（シリーズ内のばらつき）
+  - ここは難易度というより「現象の複雑さ」を動かすノブ  
+  - 通常はプリセット固定でよい（UIのAdvancedに逃がすのが無難）
+
+### 15.3 UIスライダー → 内部パラメータのマッピング例（実装方針）
+
+UIを「簡単モード」で運用するなら、ユーザが触るスライダーを2〜3本に圧縮できる：
+
+- `Signal (Main ↔ Residual)`（0〜1）
+  - 例：`f_res = lerp(0.2, 0.7, slider)`、`f_main = 1 - f_res - f_int`（`f_int`は別スライダー or 固定）
+- `Interaction Strength`（0〜1）
+  - 例：`f_int = lerp(0.0, 0.4, slider)`（主作用/残差とのトレードオフ）
+- `Cliffiness`（0〜1）
+  - 例：`η_spike = slider`
+  - `H = round(lerp(1, 5, slider))`
+  - `ℓ` は固定（or Advanced）とし、UIは理解しやすい `H` と `η_spike` を中心にする
+  - `ν_spike/σ_spike` も固定（or Advanced）に逃がせる
+
+（UIの簡単モードではこのくらいで十分に難易度を動かせる。Advancedで各パラメータを直接触れるようにしてもよい。）
+
+### 15.4 UIに必ず表示したい“難易度サマリ”（生成後に自動計算）
+
+パラメータは直感的でも、実際の出力が狙い通りとは限らないため、生成後に以下を表示する：
+
+- **寄与分解（実測）**：`VarFrac(main)`, `VarFrac(int)`, `VarFrac(res)`（合成前の標準化済み成分から算出）
+- **spike寄与（実測）**：`VarFrac(int_smooth)` vs `VarFrac(int_spike)`（可能なら）
+- **Clip率**：`P(y_obs == obs_low or obs_high)`（情報損失の目安）
+- **Cliff指標（簡易）**：embedding近傍（距離が小さいBBペア）と遠方で、`|I[i,j]-I[i',j']|` の分位点（例：95%）がどれだけ違うか
+
+---
+
+## 16. サンプルCSV（検証用ダウンロード）の仕様（推奨）
+
+目的：
+- 生成モデルが意図通り動作しているかを、UIから即座に確認できるようにする
+- 特に「寄与比率」「cliff」「clip率」が想定通りかを、CSVの列から検証できるようにする
+
+推奨CSV内容：
+- **ヘッダー（コメント行）**：
+  - Seed、slot_sizes、`d/r/σ_z`、`λ`、`H`、`η_spike`、`ν_res`、`f_main/f_int/f_res`、`clip_rate`
+  - 実測 `VarFrac(main/int/res)`、可能なら `VarFrac(int_smooth/int_spike)`
+- **データ列（少なくとも）**：
+  - `CellIndex`, 各スロットのBB index（`Slot_A`…）
+  - `y_main`, `y_int`, `y_res`, `y_latent`, `y_obs`
+  - 任意：`is_top1_latent`、`rank_latent`、`in_topk_latent`
+
+注意：
+- 全セルをCSVに出すと大きくなるため、UI上は「全セル」か「先頭N行」かを選べると便利（後回しでもよい）。
+
+これがUIに出れば、ユーザは「難しくしすぎた/簡単すぎた」を定量で調整できる。

@@ -21,10 +21,8 @@ def simple_config() -> SimulationConfig:
             SlotConfig("A", 10),
             SlotConfig("B", 10),
         ),
-        main_effect_range=(-1.0, 1.0),
-        error_clip_range=(-0.5, 0.5),
         k_per_step=1,
-        topk_k=5,
+        topk_k=100,
         random_seed=42,
     )
 
@@ -32,23 +30,10 @@ def simple_config() -> SimulationConfig:
 class TestSimulationEngine:
     """SimulationEngineのテスト"""
 
-    def test_calculate_initial_disclosure_count_2slots(self) -> None:
-        """初期開示セル数計算（2スロット）"""
+    def test_calculate_initial_disclosure_count_none(self) -> None:
+        """初期開示セル数計算（None固定）"""
         count = SimulationEngine.calculate_initial_disclosure_count((10, 20))
-        # 10 + 20 - (2-1) = 29
-        assert count == 29
-
-    def test_calculate_initial_disclosure_count_3slots(self) -> None:
-        """初期開示セル数計算（3スロット）"""
-        count = SimulationEngine.calculate_initial_disclosure_count((10, 20, 15))
-        # 10 + 20 + 15 - (3-1) = 43
-        assert count == 43
-
-    def test_calculate_initial_disclosure_count_4slots(self) -> None:
-        """初期開示セル数計算（4スロット）"""
-        count = SimulationEngine.calculate_initial_disclosure_count((10, 10, 10, 10))
-        # 10*4 - 3 = 37
-        assert count == 37
+        assert count == 0
 
     def test_run_completes(self, simple_config: SimulationConfig) -> None:
         """シミュレーションが完了すること"""
@@ -60,6 +45,7 @@ class TestSimulationEngine:
             assert trial.p_top1 > 0
             assert trial.p_topk > 0
             assert trial.p_topk <= trial.p_top1
+            assert trial.p_top100_50 >= 50
 
     def test_progress_callback(self, simple_config: SimulationConfig) -> None:
         """進捗コールバックが呼ばれること"""
@@ -84,10 +70,8 @@ class TestSimulationEngine:
             operator_type=OperatorType.RANDOM,
             n_trials=5,
             slots=(SlotConfig("A", 10), SlotConfig("B", 10)),
-            main_effect_range=(-1.0, 1.0),
-            error_clip_range=(-0.5, 0.5),
             k_per_step=1,
-            topk_k=5,
+            topk_k=100,
             random_seed=12345,
         )
 
@@ -101,6 +85,7 @@ class TestSimulationEngine:
         for t1, t2 in zip(results1.trials, results2.trials):
             assert t1.p_top1 == t2.p_top1
             assert t1.p_topk == t2.p_topk
+            assert t1.p_top100_50 == t2.p_top100_50
 
     def test_validate_config_no_warnings(
         self, simple_config: SimulationConfig
@@ -123,7 +108,7 @@ class TestMatrixGenerator:
 
         matrix = generator.generate()
 
-        assert len(matrix.y_true) == indexer.n_total
+        assert len(matrix.y_latent) == indexer.n_total
         assert len(matrix.y_obs) == indexer.n_total
         assert matrix.top1_index >= 0
         assert matrix.top1_index < indexer.n_total
@@ -151,7 +136,7 @@ class TestMatrixGenerator:
 
         matrix = generator.generate()
 
-        assert matrix.top1_index == np.argmax(matrix.y_true)
+        assert matrix.top1_index == np.argmax(matrix.y_latent)
 
     def test_topk_are_top_values(
         self, simple_config: SimulationConfig
@@ -164,7 +149,7 @@ class TestMatrixGenerator:
         matrix = generator.generate()
 
         # topk_indicesの値がy_trueの上位k個に含まれる
-        sorted_indices = np.argsort(matrix.y_true)[::-1]
+        sorted_indices = np.argsort(matrix.y_latent)[::-1]
         expected_topk = set(sorted_indices[:simple_config.topk_k])
         actual_topk = set(matrix.topk_indices)
         assert actual_topk == expected_topk

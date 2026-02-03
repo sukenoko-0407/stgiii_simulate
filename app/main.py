@@ -63,7 +63,8 @@ def main() -> None:
             1. **Operator**: Select a search strategy
                - **Random**: Uniform random selection
                - **Free-Wilson**: Free-Wilson model with Ridge regression
-               - **Bayesian Free-Wilson**: Bayesian Free-Wilson with UCB acquisition
+               - **Bayesian Free-Wilson (UCB)**: Bayesian Free-Wilson with UCB acquisition
+               - **Bayesian Free-Wilson (TS)**: Bayesian Free-Wilson with Thompson Sampling
 
             2. **Number of Trials**: How many simulation runs to perform
 
@@ -73,17 +74,25 @@ def main() -> None:
                - Total combinations = product of all slot sizes
 
             4. **Main Effect Range**: Range for building block contributions
+               - Controlled indirectly via variance fractions (f_main/f_int/f_res)
 
-            5. **Error Range**: Range for noise/interaction terms
+            5. **Difficulty Controls**:
+               - **f_main / f_int / f_res**: Variance fractions for
+                 main effects / interactions / residual
+               - **Hotspots (H)**: Number of interaction "cliffs"
+               - **η_spike**: How cliff-dominant interactions are
+               - **Residual ν**: Heavy-tail strength for unexplained error
+               - **Distance λ**: How slot-distance attenuates interactions
 
             6. **K per Step**: Number of cells to disclose per iteration
 
-            7. **Top-k**: k value for Top-k evaluation metrics
+            7. **Top-k**: fixed at 100 for evaluation metrics
 
             ### Metrics
 
             - **P_top1**: Number of cells disclosed to find the best compound
-            - **P_topk**: Number of cells disclosed to find any Top-k compound
+            - **P_topk**: Number of cells disclosed to find any Top-100 compound
+            - **P_top100_50**: Number of cells disclosed to find 50 of Top-100
             """)
 
         with st.expander("About the Model"):
@@ -93,28 +102,22 @@ def main() -> None:
             Each cell's value is generated as:
 
             ```
-            y = bias + Σ main_effect(slot_i, bb_i) + error
+            y_latent = μ0 + Σ main_effect(slot_i, bb_i)
+                       + Σ pair_interaction(slot_s, bb_s, slot_t, bb_t)
+                       + residual_error
+            y_obs = clip(y_latent, [5, 11])
             ```
 
-            - **bias**: Global bias = 6.0 (fixed)
-            - **main_effect**: BB contribution ~ Uniform(range) + slot_bias
-            - **error**: Noise ~ Normal(0, σ²), clipped to range
-              - σ = (error_clip_high - error_clip_low) / 6.0
-              - With default error range [-0.5, 0.5]: σ ≈ 0.167
+            - **main_effect**: BB contribution ~ Uniform(-1, 1) (scaled by f_main)
+            - **pair_interaction**: Smooth + spike ("cliffs") interactions
+              based on BB embeddings and slot-distance scaling exp(-D/λ)
+            - **residual_error**: t-distribution (heavy-tail) controlled by ν
+            - **Difficulty**: Controlled by variance fractions f_main/f_int/f_res
 
-            ### Initial Disclosure Methods
+            ### Initial Disclosure
 
-            Three methods are available:
-
-            1. **Cross**: N-1 slots are fixed, 1 slot varies completely.
-               Creates a "cross" pattern of initial observations.
-
-            2. **Random Each BB**: Each building block appears at least once.
-               For each BB in each slot, a cell is randomly selected where
-               that BB is used. May have overlaps across slots.
-
-            3. **None**: No initial disclosure. The search starts with
-               random selection until the model can be trained.
+            - **None (fixed)**: No initial disclosure. The search starts with
+              random selection until the model can be trained.
 
             ### Evaluation
 

@@ -13,6 +13,7 @@ class OperatorType(Enum):
     FW_OLS = "Free-Wilson (OLS)"
     FW_RIDGE = "Free-Wilson (Ridge)"
     BAYESIAN_FW_UCB = "Bayesian Free-Wilson"
+    BAYESIAN_FW_TS = "Bayesian Free-Wilson (TS)"
 
 
 class InitialDisclosureType(Enum):
@@ -45,17 +46,47 @@ class SimulationConfig:
     operator_type: OperatorType
     n_trials: int                                    # 試行数（10〜1000）
     slots: Tuple[SlotConfig, ...]                    # スロット設定（2〜4個）
-    main_effect_range: Tuple[float, float]           # 主作用の一様分布範囲 [low, high]
-    error_clip_range: Tuple[float, float]            # 誤差のclip範囲 [low, high]
     k_per_step: int                                  # 1ステップで開示するセル数K（1〜10）
-    topk_k: int                                      # Top-kのk値（5, 10, 25, 50, 100）
-    initial_disclosure_type: InitialDisclosureType = InitialDisclosureType.CROSS  # 初期開示方式
+    topk_k: int = field(default=100)                 # Top-kのk値（固定: 100）
+    initial_disclosure_type: InitialDisclosureType = InitialDisclosureType.NONE  # 初期開示方式（Noneのみ）
     random_seed: int | None = None                   # 再現性用シード（オプション）
 
+    # v1.0 生成モデル（Main + Interaction(smooth+spike) + Residual）
+    # UIでは主に「寄与比率」「cliff」「残差heavy-tail」を動かす想定
+    f_main: float = field(default=0.3)               # main寄与（分散比率、合計=1）
+    f_int: float = field(default=0.3)                # interaction寄与（分散比率）
+    f_res: float = field(default=0.4)                # residual寄与（分散比率）
+
+    # スロット距離（デフォルト: 直鎖距離 A-B-C-D）
+    slot_distance_matrix: Tuple[Tuple[float, ...], ...] | None = None
+    distance_lambda: float = field(default=1.0)      # scale=exp(-D/lambda)
+
+    # BB埋め込み（シリーズ混合）
+    embedding_dim: int = field(default=16)           # d
+    embedding_series_divisor: int = field(default=5) # K_s=ceil(N_s/divisor)
+    embedding_sigma: float = field(default=0.3)      # σ_z
+
+    # 相互作用（smooth）
+    interaction_rank: int = field(default=4)         # r（低ランク）
+
+    # 相互作用（spike / activity cliff）
+    eta_spike: float = field(default=0.3)            # cliff寄与（0=smoothのみ, 1=cliff支配）
+    spike_hotspots: int = field(default=2)           # H（ホットスポット数、各スロット対で使用）
+    spike_nu: float = field(default=6.0)             # t分布の自由度（振幅のheavy-tail）
+    spike_sigma: float = field(default=1.0)          # 振幅スケール
+    spike_ell: float = field(default=0.4)            # ホットスポット幅（UI必須ではない）
+
+    # 残差（heavy-tail）
+    residual_nu: float = field(default=6.0)          # t分布の自由度（外れやすさ）
+
+    # 出力レンジ（obs_clip_range）は現状維持。生成後にσ_targetを調整してclip率を制御可能。
+    clip_rate_max: float = field(default=0.01)       # 生成後の許容clip率（0〜1）
+
     # システム内部デフォルト（変更不可）
-    global_bias: float = field(default=6.0)  # 固定グローバルバイアス
-    slot_bias_range: Tuple[float, float] = field(default=(-0.5, 0.5))
+    global_bias: float = field(default=8.0)  # 出力平均の目安（obsレンジ中央を推奨）
     ridge_alpha: float = field(default=1.0)
+    alpha_min: float = field(default=1e-6)
+    alpha_max: float = field(default=1e6)
     sigma_min: float = field(default=0.05)
     sigma_iter_max: int = field(default=5)
     sigma_convergence_threshold: float = field(default=1e-3)
@@ -85,23 +116,105 @@ class SimulationConfig:
                 f"1ステップの開示数Kは1〜10である必要があります: {self.k_per_step}"
             )
 
-        # Top-k チェック
-        if self.topk_k not in (5, 10, 25, 50, 100):
+        # Top-k 固定（100）
+        if self.topk_k != 100:
             raise ValueError(
-                f"Top-kのkは5, 10, 25, 50, 100のいずれかである必要があります: {self.topk_k}"
+                f"Top-kのkは100で固定です: {self.topk_k}"
             )
 
-        # 主作用範囲チェック
-        if self.main_effect_range[0] >= self.main_effect_range[1]:
+        # 寄与比率チェック（分散比率、合計=1）
+        for name, v in (("f_main", self.f_main), ("f_int", self.f_int), ("f_res", self.f_res)):
+            if not (0.0 <= v <= 1.0):
+                raise ValueError(f"{name}は0〜1である必要があります: {v}")
+
+        f_sum = self.f_main + self.f_int + self.f_res
+        if abs(f_sum - 1.0) > 1e-6:
             raise ValueError(
-                f"主作用範囲の下限は上限より小さい必要があります: {self.main_effect_range}"
+                f"f_main+f_int+f_resは1.0である必要があります: {f_sum}"
             )
 
-        # 誤差範囲チェック
-        if self.error_clip_range[0] >= self.error_clip_range[1]:
+        # スロット距離スケール
+        if self.distance_lambda <= 0:
+            raise ValueError(f"distance_lambdaは正である必要があります: {self.distance_lambda}")
+
+        # 埋め込み
+        if self.embedding_dim <= 0:
+            raise ValueError(f"embedding_dimは正である必要があります: {self.embedding_dim}")
+        if self.embedding_series_divisor <= 0:
             raise ValueError(
-                f"誤差範囲の下限は上限より小さい必要があります: {self.error_clip_range}"
+                f"embedding_series_divisorは正である必要があります: {self.embedding_series_divisor}"
             )
+        if self.embedding_sigma <= 0:
+            raise ValueError(f"embedding_sigmaは正である必要があります: {self.embedding_sigma}")
+
+        # 相互作用（smooth）
+        if not (1 <= self.interaction_rank <= self.embedding_dim):
+            raise ValueError(
+                f"interaction_rankは1〜embedding_dimである必要があります: {self.interaction_rank}"
+            )
+
+        # 相互作用（spike）
+        if not (0.0 <= self.eta_spike <= 1.0):
+            raise ValueError(f"eta_spikeは0〜1である必要があります: {self.eta_spike}")
+        if self.spike_hotspots < 0:
+            raise ValueError(f"spike_hotspotsは0以上である必要があります: {self.spike_hotspots}")
+        if self.spike_nu <= 2.0:
+            raise ValueError(f"spike_nuは2より大きい必要があります: {self.spike_nu}")
+        if self.spike_sigma <= 0:
+            raise ValueError(f"spike_sigmaは正である必要があります: {self.spike_sigma}")
+        if self.spike_ell <= 0:
+            raise ValueError(f"spike_ellは正である必要があります: {self.spike_ell}")
+
+        # 残差
+        if self.residual_nu <= 2.0:
+            raise ValueError(f"residual_nuは2より大きい必要があります: {self.residual_nu}")
+
+        # clip率
+        if not (0.0 <= self.clip_rate_max <= 1.0):
+            raise ValueError(f"clip_rate_maxは0〜1である必要があります: {self.clip_rate_max}")
+
+        # 初期開示方式（Noneのみ）
+        if self.initial_disclosure_type != InitialDisclosureType.NONE:
+            raise ValueError(
+                f"初期開示方式はNoneのみ許可されています: {self.initial_disclosure_type}"
+            )
+
+        # Bayesian alpha bounds
+        if self.ridge_alpha <= 0:
+            raise ValueError(f"ridge_alphaは正である必要があります: {self.ridge_alpha}")
+        if self.alpha_min <= 0 or self.alpha_max <= 0:
+            raise ValueError(
+                f"alpha_min/alpha_maxは正である必要があります: {self.alpha_min}, {self.alpha_max}"
+            )
+        if self.alpha_min >= self.alpha_max:
+            raise ValueError(
+                f"alpha_minはalpha_maxより小さい必要があります: {self.alpha_min} >= {self.alpha_max}"
+            )
+
+        # スロット距離行列（Advanced指定）
+        if self.slot_distance_matrix is not None:
+            if len(self.slot_distance_matrix) != self.n_slots:
+                raise ValueError(
+                    "slot_distance_matrixの次元がスロット数と一致しません"
+                )
+            for row in self.slot_distance_matrix:
+                if len(row) != self.n_slots:
+                    raise ValueError(
+                        "slot_distance_matrixは正方行列である必要があります"
+                    )
+            for i in range(self.n_slots):
+                if self.slot_distance_matrix[i][i] != 0:
+                    raise ValueError(
+                        "slot_distance_matrixの対角成分は0である必要があります"
+                    )
+                for j in range(self.n_slots):
+                    if self.slot_distance_matrix[i][j] < 0:
+                        raise ValueError(
+                            "slot_distance_matrixは非負である必要があります"
+                        )
+                    # 対称性は推奨（必須ではないが、現実的には対称）
+                    # if self.slot_distance_matrix[i][j] != self.slot_distance_matrix[j][i]:
+                    #     raise ValueError("slot_distance_matrixは対称である必要があります")
 
         # 総セル数チェック
         if self.n_total_cells > self.max_total_cells:
@@ -134,9 +247,26 @@ class SimulationConfig:
 
     @property
     def sigma_gen(self) -> float:
-        """データ生成用の誤差標準偏差（±3σが概ね範囲に収まる想定）"""
-        low, high = self.error_clip_range
+        """初期σの目安（obsレンジから導く、Bayesian-FWの初期値用途）"""
+        low, high = self.obs_clip_range
         return (high - low) / 6.0
+
+    def get_slot_distance_matrix(self) -> Tuple[Tuple[float, ...], ...]:
+        """
+        スロット距離行列Dを取得（未指定なら直鎖距離）
+
+        Returns:
+            D（shape: (n_slots, n_slots)）をタプルのタプルで返す
+        """
+        if self.slot_distance_matrix is not None:
+            return self.slot_distance_matrix
+
+        # 直鎖距離: D[i,j] = |i-j|
+        n = self.n_slots
+        return tuple(
+            tuple(float(abs(i - j)) for j in range(n))
+            for i in range(n)
+        )
 
     def to_dict(self) -> dict:
         """設定を辞書形式に変換"""
@@ -147,8 +277,23 @@ class SimulationConfig:
             "slot_sizes": self.slot_sizes,
             "slot_names": self.slot_names,
             "n_total_cells": self.n_total_cells,
-            "main_effect_range": self.main_effect_range,
-            "error_clip_range": self.error_clip_range,
+            "generation": {
+                "f_main": self.f_main,
+                "f_int": self.f_int,
+                "f_res": self.f_res,
+                "distance_lambda": self.distance_lambda,
+                "embedding_dim": self.embedding_dim,
+                "embedding_series_divisor": self.embedding_series_divisor,
+                "embedding_sigma": self.embedding_sigma,
+                "interaction_rank": self.interaction_rank,
+                "eta_spike": self.eta_spike,
+                "spike_hotspots": self.spike_hotspots,
+                "spike_nu": self.spike_nu,
+                "spike_sigma": self.spike_sigma,
+                "spike_ell": self.spike_ell,
+                "residual_nu": self.residual_nu,
+                "clip_rate_max": self.clip_rate_max,
+            },
             "k_per_step": self.k_per_step,
             "topk_k": self.topk_k,
             "initial_disclosure_type": self.initial_disclosure_type.value,

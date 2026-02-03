@@ -9,7 +9,7 @@ from .registry import register_operator, get_operator, list_operators
 from .random_operator import RandomOperator
 from .fw_ols import FreeWilsonOLSOperator
 from .fw_ridge import FreeWilsonRidgeOperator
-from .bayesian_fw import BayesianFreeWilsonOperator
+from .bayesian_fw import BayesianFreeWilsonOperator, BayesianFreeWilsonTSOperator
 
 __all__ = [
     "BaseOperator",
@@ -22,4 +22,5 @@ __all__ = [
     "FreeWilsonOLSOperator",
     "FreeWilsonRidgeOperator",
     "BayesianFreeWilsonOperator",
+    "BayesianFreeWilsonTSOperator",
 ]

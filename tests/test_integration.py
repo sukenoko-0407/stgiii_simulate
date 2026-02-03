@@ -25,10 +25,8 @@ class TestIntegration:
             operator_type=OperatorType.RANDOM,
             n_trials=3,
             slots=slots,
-            main_effect_range=(-1.0, 1.0),
-            error_clip_range=(-0.5, 0.5),
             k_per_step=1,
-            topk_k=5,
+            topk_k=100,
             random_seed=42,
         )
 
@@ -40,7 +38,7 @@ class TestIntegration:
             assert trial.p_top1 > 0
             assert trial.p_topk > 0
             assert trial.p_topk <= trial.p_top1
-            assert trial.n_initial_disclosed > 0
+            assert trial.n_initial_disclosed == 0
 
     @pytest.mark.parametrize("operator_type", list(OperatorType))
     def test_all_operators_complete(
@@ -54,10 +52,8 @@ class TestIntegration:
                 SlotConfig("A", 10),
                 SlotConfig("B", 10),
             ),
-            main_effect_range=(-1.0, 1.0),
-            error_clip_range=(-0.5, 0.5),
             k_per_step=1,
-            topk_k=5,
+            topk_k=100,
             random_seed=42,
         )
 
@@ -79,10 +75,8 @@ class TestIntegration:
                 SlotConfig("A", 10),
                 SlotConfig("B", 10),
             ),
-            main_effect_range=(-1.0, 1.0),
-            error_clip_range=(-0.5, 0.5),
             k_per_step=k_per_step,
-            topk_k=5,
+            topk_k=100,
             random_seed=42,
         )
 
@@ -94,28 +88,20 @@ class TestIntegration:
             assert trial.k_value == k_per_step
 
     @pytest.mark.parametrize("topk_k", [5, 10, 20])
-    def test_various_topk_values(self, topk_k: int) -> None:
-        """各Top-k値で動作すること"""
-        config = SimulationConfig(
-            operator_type=OperatorType.RANDOM,
-            n_trials=3,
-            slots=(
-                SlotConfig("A", 15),
-                SlotConfig("B", 15),
-            ),
-            main_effect_range=(-1.0, 1.0),
-            error_clip_range=(-0.5, 0.5),
-            k_per_step=1,
-            topk_k=topk_k,
-            random_seed=42,
-        )
-
-        engine = SimulationEngine(config)
-        results = engine.run()
-
-        assert len(results.trials) == 3
-        for trial in results.trials:
-            assert trial.topk_k == topk_k
+    def test_topk_fixed(self, topk_k: int) -> None:
+        """Top-kは100固定"""
+        with pytest.raises(ValueError, match="Top-kのkは100で固定"):
+            SimulationConfig(
+                operator_type=OperatorType.RANDOM,
+                n_trials=3,
+                slots=(
+                    SlotConfig("A", 15),
+                    SlotConfig("B", 15),
+                ),
+                k_per_step=1,
+                topk_k=topk_k,
+                random_seed=42,
+            )
 
     def test_results_statistics(self) -> None:
         """結果の統計量計算"""
@@ -126,10 +112,8 @@ class TestIntegration:
                 SlotConfig("A", 10),
                 SlotConfig("B", 10),
             ),
-            main_effect_range=(-1.0, 1.0),
-            error_clip_range=(-0.5, 0.5),
             k_per_step=1,
-            topk_k=5,
+            topk_k=100,
             random_seed=42,
         )
 
@@ -140,9 +124,10 @@ class TestIntegration:
 
         assert "P_top1" in stats
         assert "P_topk" in stats
+        assert "P_top100_50" in stats
         assert "n_steps" in stats
 
-        for key in ["P_top1", "P_topk"]:
+        for key in ["P_top1", "P_topk", "P_top100_50"]:
             assert "median" in stats[key]
             assert "mean" in stats[key]
             assert "std" in stats[key]
@@ -158,10 +143,8 @@ class TestIntegration:
                 SlotConfig("A", 10),
                 SlotConfig("B", 10),
             ),
-            main_effect_range=(-1.0, 1.0),
-            error_clip_range=(-0.5, 0.5),
             k_per_step=1,
-            topk_k=5,
+            topk_k=100,
             random_seed=42,
         )
 
@@ -175,6 +158,7 @@ class TestIntegration:
         content = csv_path.read_text()
         assert "P_top1" in content
         assert "P_topk" in content
+        assert "P_top100_50" in content
 
     def test_uneven_slot_sizes(self) -> None:
         """不均一なスロットサイズ"""
@@ -186,10 +170,8 @@ class TestIntegration:
                 SlotConfig("B", 20),
                 SlotConfig("C", 15),
             ),
-            main_effect_range=(-1.0, 1.0),
-            error_clip_range=(-0.5, 0.5),
             k_per_step=2,
-            topk_k=10,
+            topk_k=100,
             random_seed=42,
         )
 
@@ -208,10 +190,8 @@ class TestIntegration:
                 SlotConfig("A", 10),
                 SlotConfig("B", 10),
             ),
-            main_effect_range=(-1.0, 1.0),
-            error_clip_range=(-0.5, 0.5),
             k_per_step=1,
-            topk_k=5,
+            topk_k=100,
             random_seed=42,
         )
 
@@ -234,10 +214,8 @@ class TestConfigValidation:
                 operator_type=OperatorType.RANDOM,
                 n_trials=10,
                 slots=(SlotConfig("A", 10),),
-                main_effect_range=(-1.0, 1.0),
-                error_clip_range=(-0.5, 0.5),
                 k_per_step=1,
-                topk_k=5,
+                topk_k=100,
             )
 
         # 5スロットはエラー
@@ -252,10 +230,8 @@ class TestConfigValidation:
                     SlotConfig("D", 10),
                     SlotConfig("E", 10),
                 ),
-                main_effect_range=(-1.0, 1.0),
-                error_clip_range=(-0.5, 0.5),
                 k_per_step=1,
-                topk_k=5,
+                topk_k=100,
             )
 
     def test_total_cells_limit(self) -> None:
@@ -269,34 +245,32 @@ class TestConfigValidation:
                     SlotConfig("B", 50),
                     SlotConfig("C", 50),
                 ),
-                main_effect_range=(-1.0, 1.0),
-                error_clip_range=(-0.5, 0.5),
                 k_per_step=1,
-                topk_k=5,
+                topk_k=100,
             )  # 50*50*50 = 125,000 > 100,000
 
-    def test_main_effect_range_validation(self) -> None:
-        """主作用範囲のバリデーション"""
-        with pytest.raises(ValueError, match="主作用範囲の下限は上限より小さい"):
+    def test_fraction_sum_validation(self) -> None:
+        """寄与比率（f_main/f_int/f_res）のバリデーション"""
+        with pytest.raises(ValueError, match="f_main\\+f_int\\+f_res"):
             SimulationConfig(
                 operator_type=OperatorType.RANDOM,
                 n_trials=10,
                 slots=(SlotConfig("A", 10), SlotConfig("B", 10)),
-                main_effect_range=(1.0, -1.0),  # 逆順
-                error_clip_range=(-0.5, 0.5),
                 k_per_step=1,
-                topk_k=5,
+                topk_k=100,
+                f_main=0.5,
+                f_int=0.5,
+                f_res=0.5,  # 合計が1にならない
             )
 
-    def test_error_range_validation(self) -> None:
-        """誤差範囲のバリデーション"""
-        with pytest.raises(ValueError, match="誤差範囲の下限は上限より小さい"):
+    def test_residual_nu_validation(self) -> None:
+        """残差t分布の自由度バリデーション"""
+        with pytest.raises(ValueError, match="residual_nu"):
             SimulationConfig(
                 operator_type=OperatorType.RANDOM,
                 n_trials=10,
                 slots=(SlotConfig("A", 10), SlotConfig("B", 10)),
-                main_effect_range=(-1.0, 1.0),
-                error_clip_range=(0.5, -0.5),  # 逆順
                 k_per_step=1,
-                topk_k=5,
+                topk_k=100,
+                residual_nu=2.0,  # 2以下は不可
             )

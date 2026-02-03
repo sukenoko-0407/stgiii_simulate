@@ -29,7 +29,7 @@ def render_results(config: SimulationConfig) -> None:
     slot_info = " × ".join(
         f"{s.name}={s.n_building_blocks}" for s in config.slots
     )
-    st.caption(f"Slots: {slot_info} | Initial Disclosure: {config.initial_disclosure_type.value}")
+    st.caption(f"Slots: {slot_info} | Initial Disclosure: None (fixed)")
 
     st.markdown("---")
 
@@ -70,9 +70,9 @@ def render_results(config: SimulationConfig) -> None:
     col4.metric("Min", format_number(p1["min"], 0))
     col5.metric("Max", format_number(p1["max"], 0))
 
-    # P_topk 統計量
-    st.markdown(f"**P_top{config.topk_k}** (Cells to reach Top-{config.topk_k})")
-    pk = stats["P_topk"]
+    # P_top100_50 統計量
+    st.markdown("**P_top100_50** (Cells to reach 50 of Top-100)")
+    pk = stats["P_top100_50"]
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Median", format_number(pk["median"], 1))
     col2.metric("Mean", format_number(pk["mean"], 1))
@@ -110,11 +110,11 @@ def render_results(config: SimulationConfig) -> None:
         plt.close(fig)
 
     with col_right:
-        st.markdown(f"**P_top{config.topk_k} Distribution**")
+        st.markdown("**P_top100_50 Distribution**")
         fig_topk = create_histogram(
-            values=df["P_topk"].tolist(),
-            title=f"P_top{config.topk_k} ({config.operator_type.value})",
-            xlabel=f"P_top{config.topk_k} (Number of Disclosed Cells)",
+            values=df["P_top100_50"].tolist(),
+            title=f"P_top100_50 ({config.operator_type.value})",
+            xlabel="P_top100_50 (Number of Disclosed Cells)",
             ylabel="Frequency",
             bins=min(30, len(df)),
             median_line=True
@@ -138,14 +138,15 @@ def render_results(config: SimulationConfig) -> None:
         "topk_k": "Top-k",
         "P_top1": "P_top1",
         "P_topk": "P_topk",
+        "P_top100_50": "P_top100_50",
         "n_steps": "Steps",
-        "hit_in_initial_topk": "TopK in Initial",
+        "hit_in_initial_topk": "Top100 in Initial",
     })
 
     # 不要なカラムを削除
     columns_to_show = [
-        "Trial", "P_top1", "P_topk", "Steps",
-        "Initial Disclosed", "TopK in Initial"
+        "Trial", "P_top1", "P_top100_50", "Steps",
+        "Initial Disclosed", "Top100 in Initial"
     ]
     display_df = display_df[columns_to_show]
 
@@ -171,11 +172,16 @@ Trials: {config.n_trials}
 Slots: {config.n_slots}
 Slot Sizes: {config.slot_sizes}
 Total Cells: {config.n_total_cells}
-Initial Disclosure: {config.initial_disclosure_type.value}
+Initial Disclosure: None (fixed)
 K per Step: {config.k_per_step}
 Top-k: {config.topk_k}
-Main Effect Range: {config.main_effect_range}
-Error Clip Range: {config.error_clip_range}
+Generation (v1.0):
+  Fractions (variance): f_main={config.f_main}, f_int={config.f_int}, f_res={config.f_res}
+  Distance: lambda={config.distance_lambda}
+  Cliffs: eta_spike={config.eta_spike}, hotspots={config.spike_hotspots}
+  Residual: nu_res={config.residual_nu}
+  Embedding: d={config.embedding_dim}, series_divisor={config.embedding_series_divisor}, sigma_z={config.embedding_sigma}
+  Interaction: rank={config.interaction_rank}
 Random Seed: {config.random_seed}
 
 Results Summary
@@ -187,7 +193,7 @@ P_top1:
   Min: {p1['min']:.0f}
   Max: {p1['max']:.0f}
 
-P_top{config.topk_k}:
+P_top100_50:
   Median: {pk['median']:.1f}
   Mean: {pk['mean']:.1f}
   STD: {pk['std']:.1f}

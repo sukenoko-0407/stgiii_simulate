@@ -21,6 +21,7 @@ class TrialResult:
     topk_k: int                    # Top-kのk値
     p_top1: int                    # Top-1到達時の開示セル数
     p_topk: int                    # Top-k到達時の開示セル数
+    p_top100_50: int               # Top-100のうち50個到達時の開示セル数
     n_steps: int                   # 反復ステップ数（初期開示除く）
     hit_in_initial_top1: bool      # 初期開示でTop-1到達したか
     hit_in_initial_topk: bool      # 初期開示でTop-k到達したか
@@ -37,6 +38,7 @@ class TrialResult:
             "topk_k": self.topk_k,
             "P_top1": self.p_top1,
             "P_topk": self.p_topk,
+            "P_top100_50": self.p_top100_50,
             "n_steps": self.n_steps,
             "hit_in_initial_top1": self.hit_in_initial_top1,
             "hit_in_initial_topk": self.hit_in_initial_topk,
@@ -81,7 +83,7 @@ class SimulationResults:
         統計量を計算
 
         Returns:
-            {"P_top1": {...}, "P_topk": {...}} 形式の辞書
+            {"P_top1": {...}, "P_topk": {...}, "P_top100_50": {...}} 形式の辞書
             各項目は median, mean, std, max, min を含む
         """
         df = self.to_dataframe()
@@ -98,6 +100,7 @@ class SimulationResults:
         return {
             "P_top1": calc_stats(df["P_top1"]),
             "P_topk": calc_stats(df["P_topk"]),
+            "P_top100_50": calc_stats(df["P_top100_50"]),
             "n_steps": calc_stats(df["n_steps"]),
         }
 
@@ -111,6 +114,7 @@ class SimulationResults:
         stats = self.compute_statistics()
         p1 = stats["P_top1"]
         pk = stats["P_topk"]
+        p100_50 = stats["P_top100_50"]
 
         lines = [
             f"=== Simulation Results ===",
@@ -127,6 +131,11 @@ class SimulationResults:
             f"  Median: {pk['median']:.1f}",
             f"  Mean:   {pk['mean']:.1f} +/- {pk['std']:.1f}",
             f"  Range:  [{pk['min']:.0f}, {pk['max']:.0f}]",
+            "",
+            "P_top100_50 (cells to reach 50 of Top-100):",
+            f"  Median: {p100_50['median']:.1f}",
+            f"  Mean:   {p100_50['mean']:.1f} +/- {p100_50['std']:.1f}",
+            f"  Range:  [{p100_50['min']:.0f}, {p100_50['max']:.0f}]",
         ]
 
         return "\n".join(lines)
@@ -138,6 +147,10 @@ class SimulationResults:
     def get_p_topk_values(self) -> List[int]:
         """P_topk値のリストを取得"""
         return [t.p_topk for t in self.trials]
+
+    def get_p_top100_50_values(self) -> List[int]:
+        """P_top100_50値のリストを取得"""
+        return [t.p_top100_50 for t in self.trials]
 
     def count_initial_hits(self) -> Dict[str, int]:
         """

@@ -109,10 +109,16 @@ class SimulationEngine:
             idx in initial_result.disclosed_indices
             for idx in matrix.topk_indices
         )
+        topk_set = set(matrix.topk_indices.tolist())
+        topk_hit_set = set(
+            idx for idx in initial_result.disclosed_indices if idx in topk_set
+        )
+        topk_hit_count = len(topk_hit_set)
 
         # P_top1, P_topkの初期値
         p_top1: int | None = n_initial if hit_top1_initial else None
         p_topk: int | None = n_initial if hit_topk_initial else None
+        p_top100_50: int | None = n_initial if topk_hit_count >= 50 else None
 
         # Operatorの初期学習
         indices, values = disclosure.get_data_for_training()
@@ -122,7 +128,7 @@ class SimulationEngine:
         n_steps = 0
         k = self.config.k_per_step
 
-        while p_top1 is None:
+        while (p_top1 is None) or (p_top100_50 is None):
             n_steps += 1
 
             # 次に開示するセルを選択
@@ -147,6 +153,18 @@ class SimulationEngine:
                         p_topk = disclosure.n_disclosed
                         break
 
+            # Top-100のうち50個に到達したか
+            if p_top100_50 is None:
+                new_hits = 0
+                for idx in selected:
+                    if idx in topk_set and idx not in topk_hit_set:
+                        topk_hit_set.add(idx)
+                        new_hits += 1
+                if new_hits > 0:
+                    topk_hit_count += new_hits
+                if topk_hit_count >= 50:
+                    p_top100_50 = disclosure.n_disclosed
+
             # Top-1到達チェック
             if matrix.top1_index in selected:
                 p_top1 = disclosure.n_disclosed
@@ -154,6 +172,10 @@ class SimulationEngine:
         # Top-kが未到達のまま終了した場合（Top-1がTop-kに含まれていた場合）
         if p_topk is None:
             p_topk = p_top1
+        if p_top1 is None:
+            p_top1 = disclosure.n_disclosed
+        if p_top100_50 is None:
+            p_top100_50 = disclosure.n_disclosed
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
@@ -166,6 +188,7 @@ class SimulationEngine:
             topk_k=self.config.topk_k,
             p_top1=p_top1 if p_top1 is not None else disclosure.n_disclosed,
             p_topk=p_topk if p_topk is not None else disclosure.n_disclosed,
+            p_top100_50=p_top100_50 if p_top100_50 is not None else disclosure.n_disclosed,
             n_steps=n_steps,
             hit_in_initial_top1=hit_top1_initial,
             hit_in_initial_topk=hit_topk_initial,
@@ -336,7 +359,7 @@ class SimulationEngine:
     @staticmethod
     def calculate_initial_disclosure_count(
         slot_sizes: Tuple[int, ...],
-        disclosure_type: InitialDisclosureType = InitialDisclosureType.CROSS
+        disclosure_type: InitialDisclosureType = InitialDisclosureType.NONE
     ) -> int:
         """
         初期開示セル数を計算（静的メソッド、UI表示用）
@@ -349,8 +372,7 @@ class SimulationEngine:
             初期開示セル数（ユニーク）
 
         Note:
-            Cross方式: 和集合のサイズ = Σ(slot_size) - (n_slots - 1)
-            Random Each BB方式: 各スロットのBB数の合計（重複により実際は少し減る可能性あり）
+            現仕様ではNoneのみ使用
         """
         if disclosure_type == InitialDisclosureType.CROSS:
             n_slots = len(slot_sizes)
@@ -384,13 +406,6 @@ class SimulationEngine:
                 f"総セル数が上限を超えています: {config.n_total_cells:,} > {config.max_total_cells:,}"
             )
 
-        # 初期開示セル数がTop-kより多い場合の警告
-        initial_count = SimulationEngine.calculate_initial_disclosure_count(
-            config.slot_sizes
-        )
-        if initial_count >= config.n_total_cells:
-            warnings.append(
-                f"初期開示セル数が総セル数以上です: {initial_count} >= {config.n_total_cells}"
-            )
+        # 初期開示はNone固定のため警告対象なし
 
         return warnings
