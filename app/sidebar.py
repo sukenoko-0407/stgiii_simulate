@@ -7,7 +7,14 @@ import io
 import numpy as np
 import streamlit as st
 
-from stgiii_core.config import SimulationConfig, SlotConfig, OperatorType, InitialDisclosureType
+from stgiii_core.config import (
+    SimulationConfig,
+    SlotConfig,
+    OperatorType,
+    InitialDisclosureType,
+    NonlinearityType,
+    ContinuousInteractionModel,
+)
 from stgiii_core.indexer import CellIndexer
 from stgiii_core.matrix import MatrixGenerator
 
@@ -28,11 +35,18 @@ def render_sidebar() -> Tuple[SimulationConfig | None, bool]:
         "Free-Wilson (Ridge)": OperatorType.FW_RIDGE,
         "Bayesian Free-Wilson (UCB)": OperatorType.BAYESIAN_FW_UCB,
         "Bayesian Free-Wilson (TS)": OperatorType.BAYESIAN_FW_TS,
+        "Free-Wilson (OLS + Discrete Interaction)": OperatorType.FW_OLS_DISCRETE,
+        "Free-Wilson (Ridge + Discrete Interaction)": OperatorType.FW_RIDGE_DISCRETE,
+        "Bayesian Free-Wilson (Discrete Interaction)": OperatorType.BAYESIAN_FW_DISCRETE,
+        "Free-Wilson (OLS + Continuous Interaction)": OperatorType.FW_OLS_CONTINUOUS,
+        "Free-Wilson (Ridge + Continuous Interaction)": OperatorType.FW_RIDGE_CONTINUOUS,
+        "Bayesian Free-Wilson (Continuous Interaction)": OperatorType.BAYESIAN_FW_CONTINUOUS,
     }
+    operator_keys = list(operator_options.keys())
     operator_name = st.sidebar.selectbox(
         "Operator (Search Strategy)",
-        options=list(operator_options.keys()),
-        index=3,  # デフォルトはBayesian-FW-UCB
+        options=operator_keys,
+        index=operator_keys.index("Bayesian Free-Wilson (UCB)"),
         help="Select the search strategy to evaluate"
     )
     operator_type = operator_options[operator_name]
@@ -91,6 +105,66 @@ def render_sidebar() -> Tuple[SimulationConfig | None, bool]:
         return None, False
 
     st.sidebar.markdown("---")
+
+    # Operator Advanced Settings (Continuous Interaction)
+    is_continuous = operator_type in {
+        OperatorType.FW_OLS_CONTINUOUS,
+        OperatorType.FW_RIDGE_CONTINUOUS,
+        OperatorType.BAYESIAN_FW_CONTINUOUS,
+    }
+    operator_high_dim = 256
+    operator_pca_dim = 16
+    operator_mlp_hidden_dim = 64
+    operator_nonlinearity = NonlinearityType.TANH
+    continuous_interaction_model = ContinuousInteractionModel.KRON
+    continuous_interaction_rank = 4
+
+    if is_continuous:
+        with st.sidebar.expander("Advanced: Continuous Interaction Settings", expanded=False):
+            operator_high_dim = st.selectbox(
+                "High-Dim Output (operator_high_dim)",
+                options=[256, 512],
+                index=0,
+                help="High-dimensional vector size for Operator"
+            )
+            operator_pca_dim = st.selectbox(
+                "PCA Dimension (operator_pca_dim)",
+                options=[4, 8, 16, 32, 64],
+                index=2,
+                help="Fixed PCA dimension (center only)"
+            )
+            operator_mlp_hidden_dim = st.selectbox(
+                "MLP Hidden Dim (operator_mlp_hidden_dim)",
+                options=[4, 8, 16, 32, 64],
+                index=4,
+                help="Hidden dimension for random MLP transform"
+            )
+            operator_nonlinearity = st.selectbox(
+                "Nonlinearity",
+                options=[NonlinearityType.TANH, NonlinearityType.GELU],
+                index=0,
+                format_func=lambda v: v.value,
+                help="Nonlinearity applied once after high-dim transform"
+            )
+            continuous_interaction_model = st.selectbox(
+                "Continuous Interaction Model",
+                options=[
+                    ContinuousInteractionModel.KRON,
+                    ContinuousInteractionModel.LOW_RANK,
+                ],
+                index=0,
+                format_func=lambda v: v.value,
+                help="kron: full bilinear regression, low_rank: rank-restricted"
+            )
+            if continuous_interaction_model == ContinuousInteractionModel.LOW_RANK:
+                max_rank = min(16, operator_pca_dim)
+                rank_options = [r for r in [2, 4, 8, 16] if r <= max_rank]
+                continuous_interaction_rank = st.selectbox(
+                    "Low-Rank Rank",
+                    options=rank_options,
+                    index=min(1, len(rank_options) - 1),
+                    help="Rank for low-rank bilinear model"
+                )
 
     # 難易度プリセット（3つ）
     st.sidebar.subheader("Difficulty Preset")
@@ -252,6 +326,12 @@ def render_sidebar() -> Tuple[SimulationConfig | None, bool]:
         residual_nu=float(residual_nu),
         distance_lambda=float(distance_lambda),
         slot_distance_matrix=slot_distance_matrix,
+        operator_high_dim=int(operator_high_dim),
+        operator_pca_dim=int(operator_pca_dim),
+        operator_mlp_hidden_dim=int(operator_mlp_hidden_dim),
+        operator_nonlinearity=operator_nonlinearity,
+        continuous_interaction_model=continuous_interaction_model,
+        continuous_interaction_rank=int(continuous_interaction_rank),
         seed=int(sample_seed),
     )
     st.sidebar.download_button(
@@ -324,6 +404,12 @@ def render_sidebar() -> Tuple[SimulationConfig | None, bool]:
                 residual_nu=float(residual_nu),
                 distance_lambda=float(distance_lambda),
                 slot_distance_matrix=slot_distance_matrix,
+                operator_high_dim=int(operator_high_dim),
+                operator_pca_dim=int(operator_pca_dim),
+                operator_mlp_hidden_dim=int(operator_mlp_hidden_dim),
+                operator_nonlinearity=operator_nonlinearity,
+                continuous_interaction_model=continuous_interaction_model,
+                continuous_interaction_rank=int(continuous_interaction_rank),
             )
             return config, True
         except ValueError as e:
@@ -344,6 +430,12 @@ def _generate_sample_data(
     residual_nu: float,
     distance_lambda: float,
     slot_distance_matrix: Tuple[Tuple[float, ...], ...] | None,
+    operator_high_dim: int,
+    operator_pca_dim: int,
+    operator_mlp_hidden_dim: int,
+    operator_nonlinearity: NonlinearityType,
+    continuous_interaction_model: ContinuousInteractionModel,
+    continuous_interaction_rank: int,
     seed: int
 ) -> str:
     """
@@ -382,6 +474,12 @@ def _generate_sample_data(
         residual_nu=residual_nu,
         distance_lambda=distance_lambda,
         slot_distance_matrix=slot_distance_matrix,
+        operator_high_dim=operator_high_dim,
+        operator_pca_dim=operator_pca_dim,
+        operator_mlp_hidden_dim=operator_mlp_hidden_dim,
+        operator_nonlinearity=operator_nonlinearity,
+        continuous_interaction_model=continuous_interaction_model,
+        continuous_interaction_rank=continuous_interaction_rank,
     )
 
     generator = MatrixGenerator(config, indexer, rng)

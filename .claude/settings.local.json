@@ -4,7 +4,8 @@
       "Bash(C:/Users/kimot/miniforge3/envs/stage_iii_simulator/python.exe -c:*)",
       "Bash(conda activate:*)",
       "Bash(python:*)",
-      "Bash(conda run:*)"
+      "Bash(conda run:*)",
+      "Bash(tree:*)"
     ]
   }
 }

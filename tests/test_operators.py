@@ -12,6 +12,7 @@ from stgiii_core.operators.base import OperatorContext
 from stgiii_core.operators.registry import get_operator, list_operators
 from stgiii_core.operators.random_operator import RandomOperator
 from stgiii_core.operators.fw_ridge import FreeWilsonRidgeOperator
+from stgiii_core.matrix import OperatorFeatureBundle
 from stgiii_core.operators.bayesian_fw import (
     BayesianFreeWilsonOperator,
     BayesianFreeWilsonTSOperator,
@@ -39,7 +40,27 @@ def context(simple_config: SimulationConfig) -> OperatorContext:
     """Operatorコンテキストを作成"""
     indexer = CellIndexer(simple_config.slot_sizes)
     rng = np.random.default_rng(42)
-    return OperatorContext(simple_config, indexer, rng)
+    # Dummy features for continuous operators
+    bb_high = []
+    bb_low = []
+    pca_components = []
+    pca_means = []
+    for slot in simple_config.slots:
+        n_bb = slot.n_building_blocks
+        bb_high.append(rng.normal(0.0, 1.0, size=(n_bb, simple_config.operator_high_dim)))
+        bb_low.append(rng.normal(0.0, 1.0, size=(n_bb, simple_config.operator_pca_dim)))
+        pca_components.append(
+            rng.normal(0.0, 1.0, size=(simple_config.operator_pca_dim, simple_config.operator_high_dim))
+        )
+        pca_means.append(rng.normal(0.0, 1.0, size=(1, simple_config.operator_high_dim)))
+    features = OperatorFeatureBundle(
+        bb_high=bb_high,
+        bb_low=bb_low,
+        transform_params={},
+        pca_components=pca_components,
+        pca_means=pca_means,
+    )
+    return OperatorContext(simple_config, indexer, rng, features=features)
 
 
 class TestOperatorRegistry:
@@ -52,6 +73,12 @@ class TestOperatorRegistry:
         assert OperatorType.FW_RIDGE in operators
         assert OperatorType.BAYESIAN_FW_UCB in operators
         assert OperatorType.BAYESIAN_FW_TS in operators
+        assert OperatorType.FW_OLS_DISCRETE in operators
+        assert OperatorType.FW_RIDGE_DISCRETE in operators
+        assert OperatorType.BAYESIAN_FW_DISCRETE in operators
+        assert OperatorType.FW_OLS_CONTINUOUS in operators
+        assert OperatorType.FW_RIDGE_CONTINUOUS in operators
+        assert OperatorType.BAYESIAN_FW_CONTINUOUS in operators
 
     def test_get_random_operator(self, context: OperatorContext) -> None:
         """RandomOperatorの取得"""

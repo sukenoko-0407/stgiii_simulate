@@ -122,7 +122,7 @@ class SimulationConfig:
     obs_clip_range: Tuple[float, float] = field(default=(5.0, 11.0))
     max_matrix_regeneration: int = field(default=5)
     max_initial_bb_retry: int = field(default=100)
-    max_total_cells: int = field(default=100_000)
+    max_total_cells: int = field(default=20_000)
 
     def __post_init__(self) -> None:
         """バリデーション"""
